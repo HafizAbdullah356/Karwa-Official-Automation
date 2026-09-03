@@ -422,25 +422,26 @@ class ADBManager:
                     pass
         return None
 
-    def wait_for_element(self, text=None, resource_id=None, content_desc=None, class_name=None, fuzzy=False, timeout=12, auto_scroll=True):
-        """Polls for element, scrolling down if not found initially."""
+    def wait_for_element(self, text=None, resource_id=None, content_desc=None, class_name=None, fuzzy=False, timeout=12, auto_scroll=False):
+        """Polls for element, scrolling down if not found initially when auto_scroll is True."""
         spec = {"text": text, "resource_id": resource_id, "content_desc": content_desc, "class_name": class_name, "fuzzy": fuzzy}
         elem, _ = self.wait_for_any_element([spec], timeout=timeout, auto_scroll=auto_scroll)
         return elem
 
-    def wait_and_click(self, text=None, resource_id=None, content_desc=None, class_name=None, fuzzy=False, timeout=12, step_delay=1.0, auto_scroll=True):
+    def wait_and_click(self, text=None, resource_id=None, content_desc=None, class_name=None, fuzzy=False, timeout=12, step_delay=0.2, auto_scroll=False):
         """Waits for element, scrolling if needed to bring into view, and clicks it."""
         elem = self.wait_for_element(text=text, resource_id=resource_id, content_desc=content_desc, class_name=class_name, fuzzy=fuzzy, timeout=timeout, auto_scroll=auto_scroll)
         if elem:
             label = elem['text'] or elem['resource_id'] or elem['content_desc'] or elem['class']
             self.log_info(f"Clicking element '{label}' at ({elem['x']}, {elem['y']})")
             self.tap(elem['x'], elem['y'])
-            time.sleep(step_delay)
+            if step_delay > 0:
+                time.sleep(step_delay)
             return True
         return False
 
-    def wait_for_any_element(self, element_specs, timeout=15, poll_interval=0.5, auto_scroll=True):
-        """Polls for any element in specs. Auto-scrolls down if not found after initial checks."""
+    def wait_for_any_element(self, element_specs, timeout=15, poll_interval=0.3, auto_scroll=False):
+        """Polls for any element in specs rapidly. Auto-scrolls down if not found after initial checks when auto_scroll is True."""
         start = time.time()
         temp_file = os.path.join("debug_logs", "temp_poll_dump.xml")
         scrolled = False
@@ -467,17 +468,17 @@ class ADBManager:
                         except Exception:
                             pass
 
-            # Auto-scroll feature: If element is off-screen (not found after 2.5s), swipe up to scroll down
+            # Auto-scroll feature: Only if explicitly enabled and not found after 2.5s
             if auto_scroll and not scrolled and (time.time() - start > 2.5):
                 self.log_info("Element not visible on current screen view. Scrolling down to locate button...")
                 self.swipe_up(duration_ms=300)
                 scrolled = True
-                time.sleep(0.6)
+                time.sleep(0.4)
 
             time.sleep(poll_interval)
         return None, None
 
-    def wait_for_page_to_contain(self, keywords, timeout=15, poll_interval=0.5, local_path="temp_page_dump.xml"):
+    def wait_for_page_to_contain(self, keywords, timeout=15, poll_interval=0.3, local_path="temp_page_dump.xml"):
         """Polls UI layout dump until any of the given keywords exist in the page hierarchy."""
         start = time.time()
         if isinstance(keywords, str):
@@ -505,4 +506,5 @@ class ADBManager:
                             pass
             time.sleep(poll_interval)
         return None, None
+
 

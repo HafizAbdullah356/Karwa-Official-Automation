@@ -8,7 +8,7 @@
   "target_bank_filter": "Commercial Bank of Qatar",
   "csv_input_file": "leads.csv",
   "csv_output_file": "leads_results.csv",
-  "delay_between_steps": 1.2,
+  "delay_between_steps": 0.3,
   "element_timeout": 12,
   "debug_dir": "debug_logs",
   "restart_app_on_fail": true,

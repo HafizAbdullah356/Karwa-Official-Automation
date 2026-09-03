@@ -159,55 +159,58 @@ class KarwaAutomation:
         """Navigates smoothly back to Karwa App Home screen without force-stopping or closing the app."""
         self.adb.log_info("Returning to Karwa app home screen...")
         
-        # 1. Check if already on Home screen
-        if self.adb.find_element(text="Account") or self.adb.find_element(text="Our Services"):
-            self.adb.log_success("Already on Karwa App home screen.")
-            return True
-
         # Dismiss soft keyboard if open
         self.adb.dismiss_keyboard()
 
-        # 2. Try clicking top-left back button (ivBack) to exit WebView / Payment screen in 1 click
+        # 1. Check if already on Home screen root
+        elem, _ = self.adb.wait_for_any_element([
+            {"text": "Account"},
+            {"text": "Our Services"},
+            {"text": "Services", "fuzzy": True}
+        ], timeout=2, poll_interval=0.3, auto_scroll=False)
+
+        if elem:
+            self.adb.log_success("Already on Karwa App home screen.")
+            return True
+
+        # 2. Check if stuck on Transaction / Activity History page
+        page_kw, _ = self.adb.wait_for_page_to_contain(["transaction", "history", "recent transactions"], timeout=1, poll_interval=0.3)
+        if page_kw:
+            self.adb.log_warn(f"Transaction History page detected ('{page_kw}'). Pressing Back...")
+            self.adb.go_back()
+            time.sleep(0.3)
+
+        # 3. Try clicking top-left back button (ivBack) to exit WebView / Payment screen
         iv_back = self.adb.find_element(resource_id="ivBack", fuzzy=True)
         if iv_back:
             self.adb.log_info(f"Clicking top-left Back button (ivBack) at ({iv_back['x']}, {iv_back['y']})...")
             self.adb.tap(iv_back['x'], iv_back['y'])
-            time.sleep(1.0)
-            if self.adb.find_element(text="Account") or self.adb.find_element(text="Our Services"):
+            elem, _ = self.adb.wait_for_any_element([{"text": "Account"}, {"text": "Our Services"}], timeout=2, poll_interval=0.3, auto_scroll=False)
+            if elem:
                 self.adb.log_success("Successfully returned to Home screen via top-left Back button.")
                 return True
 
-        # 3. Try tapping Account tab (bottom-right) directly to reset view 
-        self.adb.log_info("Tapping Account tab (bottom-right) to exit sub-screen...")
-        self.adb.tap_ratio(0.88, 0.95)
-        time.sleep(1.0)
-        if self.adb.find_element(text="Account") or self.adb.find_element(text="Our Services"):
-            self.adb.log_success("Successfully returned to Home screen via Account tab tap.")
-            return True
-
-        # 4. Fallback: Press Android Back key up to 2 times
-        for i in range(2):
-            self.adb.log_info(f"Pressing Back key [{i+1}/2]...")
-            self.adb.go_back()
-            time.sleep(0.8)
-
-            dialog_btn = self.adb.find_element(text="Yes") or self.adb.find_element(text="OK") or self.adb.find_element(text="Cancel")
-            if dialog_btn:
-                self.adb.tap(dialog_btn['x'], dialog_btn['y'])
-                time.sleep(0.5)
-
-            if self.adb.find_element(text="Account") or self.adb.find_element(text="Our Services"):
-                self.adb.log_success("Returned to Home screen.")
-                return True
-
-        # 5. Final fallback: Bring Karwa MainActivity to front smoothly
+        # 4. Bring Karwa MainActivity to front smoothly via am start
         self.adb.log_info("Bringing Karwa MainActivity to front...")
         self.adb.start_app(self.package, self.activity)
-        time.sleep(1.0)
+        
+        home_elem, _ = self.adb.wait_for_any_element([
+            {"text": "Our Services"},
+            {"text": "Account"},
+            {"text": "Services", "fuzzy": True}
+        ], timeout=4, poll_interval=0.3, auto_scroll=False)
+        
+        if home_elem:
+            self.adb.log_success("Successfully returned to Home screen via MainActivity reset.")
+            return True
+
+        # 5. Fallback: Tap Home tab (bottom-left ratio 0.12, 0.95)
+        self.adb.log_info("Tapping Home tab (bottom-left) to reset view...")
+        self.adb.tap_ratio(0.12, 0.95)
         return True
 
-    def wait_for_payment_webview_ready(self, timeout=45):
-        """Polls until WebView progressbar spinner disappears and HTML content (customerEmail / 100.00 QAR) is rendered."""
+    def wait_for_payment_webview_ready(self, timeout=30):
+        """Polls rapidly until WebView progressbar spinner disappears and HTML content (customerEmail / 100.00 QAR) is rendered."""
         start = time.time()
         temp_file = os.path.join(self.debug_dir, "temp_webview_dump.xml")
         
@@ -215,7 +218,7 @@ class KarwaAutomation:
             dump_path = self.adb.dump_layout(temp_file)
             if dump_path:
                 try:
-                    with open(dump_path, 'r', encoding='utf-8') as f:
+                    with open(dump_path, 'r', encoding='utf-8', errors='ignore') as f:
                         content = f.read().lower()
                     
                     has_email = ("customeremail" in content or "customer email" in content)
@@ -234,9 +237,9 @@ class KarwaAutomation:
                             os.remove(temp_file)
                         except Exception:
                             pass
-            time.sleep(0.8)
+            time.sleep(0.3)
             
-        self.adb.log_warn("Payment WebView ready check timed out after 45s.")
+        self.adb.log_warn("Payment WebView ready check timed out after 30s.")
         return False
 
     def run_flow_for_lead(self, phone_raw, bank_name=None, email=None):
@@ -286,79 +289,83 @@ class KarwaAutomation:
                     self.adb.log_warn(f"Cache clear warning: {cache_err}")
 
             # ----------------------------------------------------
-            # 1. Ensure App Home Screen is Active (App stays open!)
+            # 1. Ensure App Home Screen is Active
             # ----------------------------------------------------
             self.log_step("Navigating to App Home Screen")
             self.reset_to_app_home()
-            time.sleep(self.delay)
 
             # ----------------------------------------------------
             # 2. Tap Account Tab (Bottom-Right)
             # ----------------------------------------------------
             self.log_step("Navigating to Account Tab")
-            if not self.adb.wait_and_click(text="Account", timeout=self.timeout, step_delay=0.5):
-                self.adb.log_warn("Account element not found by text. Clicking bottom-right ratio.")
+            if not self.adb.wait_and_click(text="Account", timeout=5, step_delay=0.2, auto_scroll=False):
+                self.adb.log_warn("Account element not found by text. Clicking bottom-right ratio (0.88, 0.95).")
                 self.adb.tap_ratio(0.88, 0.95)
 
-            # SMART WAIT: Wait for Account screen / Wallet option to render before proceeding!
+            # DYNAMIC WAIT: Wait for Account screen / Wallet option to render
             wallet_indicator, _ = self.adb.wait_for_any_element([
                 {"text": "Wallet"},
                 {"text": "My Wallet", "fuzzy": True},
                 {"text": "Top Up", "fuzzy": True}
-            ], timeout=12)
-            if not wallet_indicator:
-                self.adb.log_warn("Account page wallet indicator not detected yet, retrying click...")
+            ], timeout=5, poll_interval=0.3, auto_scroll=False)
+
+            # Transaction History Trap Prevention
+            page_kw, _ = self.adb.wait_for_page_to_contain(["transaction", "history", "recent transactions"], timeout=1, poll_interval=0.3)
+            if page_kw:
+                self.adb.log_warn(f"Transaction History screen detected ('{page_kw}'). Pressing Back to return to Account...")
+                self.adb.go_back()
                 self.adb.tap_ratio(0.88, 0.95)
-                wallet_indicator, _ = self.adb.wait_for_any_element([{"text": "Wallet"}, {"text": "My Wallet", "fuzzy": True}], timeout=5)
+                wallet_indicator, _ = self.adb.wait_for_any_element([{"text": "Wallet"}, {"text": "My Wallet", "fuzzy": True}], timeout=4, poll_interval=0.3, auto_scroll=False)
 
             # ----------------------------------------------------
             # 3. Tap Wallet Item
             # ----------------------------------------------------
             self.log_step("Navigating to Wallet")
-            if not self.adb.wait_and_click(text="Wallet", timeout=self.timeout, step_delay=0.5):
-                self.adb.log_warn("Wallet text element not found. Clicking ratio position.")
-                self.adb.tap_ratio(0.20, 0.39)
+            if not self.adb.wait_and_click(text="Wallet", timeout=5, step_delay=0.2, auto_scroll=False):
+                self.adb.log_warn("Wallet text element not found. Clicking Wallet card ratio position (0.20, 0.38).")
+                self.adb.tap_ratio(0.20, 0.38)
 
-            # SMART WAIT: Wait for Wallet screen (Top Up Wallet) to load before proceeding!
+            # DYNAMIC WAIT: Wait for Wallet screen (Top Up Wallet) to load
             topup_indicator, _ = self.adb.wait_for_any_element([
                 {"text": "Top Up Wallet"},
                 {"text": "Top Up", "fuzzy": True},
                 {"text": "Add Money", "fuzzy": True}
-            ], timeout=12)
+            ], timeout=5, poll_interval=0.3, auto_scroll=False)
+
             if not topup_indicator:
-                self.adb.log_warn("Top Up Wallet indicator not detected yet, retrying ratio tap...")
-                self.adb.tap_ratio(0.20, 0.39)
-                topup_indicator, _ = self.adb.wait_for_any_element([{"text": "Top Up Wallet"}, {"text": "Top Up", "fuzzy": True}], timeout=5)
+                self.adb.log_warn("Top Up Wallet indicator not detected yet, retrying Wallet card tap...")
+                self.adb.tap_ratio(0.20, 0.38)
+                topup_indicator, _ = self.adb.wait_for_any_element([{"text": "Top Up Wallet"}, {"text": "Top Up", "fuzzy": True}], timeout=4, poll_interval=0.3, auto_scroll=False)
 
             # ----------------------------------------------------
             # 4. Tap Top Up Wallet
             # ----------------------------------------------------
             self.log_step("Clicking Top Up Wallet")
-            if not self.adb.wait_and_click(text="Top Up Wallet", timeout=self.timeout, step_delay=0.5):
+            if not self.adb.wait_and_click(text="Top Up Wallet", timeout=5, step_delay=0.2, auto_scroll=False):
                 self.adb.log_warn("Top Up Wallet not found by text. Clicking top-up card ratio.")
                 self.adb.tap_ratio(0.27, 0.31)
 
-            # SMART WAIT: Wait for Top Up screen (100 QAR / Amount options / Add funds) to load!
+            # DYNAMIC WAIT: Wait for Top Up screen (100 QAR / Amount options / Add funds) to load
             amount_indicator, _ = self.adb.wait_for_any_element([
                 {"text": "100 QAR"},
                 {"text": "Add funds"},
                 {"text": "QAR", "fuzzy": True}
-            ], timeout=12)
+            ], timeout=5, poll_interval=0.3, auto_scroll=False)
+
             if not amount_indicator:
                 self.adb.log_warn("Amount selection screen not detected, retrying top-up card tap...")
                 self.adb.tap_ratio(0.27, 0.31)
-                amount_indicator, _ = self.adb.wait_for_any_element([{"text": "100 QAR"}, {"text": "Add funds"}], timeout=5)
+                amount_indicator, _ = self.adb.wait_for_any_element([{"text": "100 QAR"}, {"text": "Add funds"}], timeout=4, poll_interval=0.3, auto_scroll=False)
 
             # ----------------------------------------------------
             # 5. Select 100 QAR and Add Funds
             # ----------------------------------------------------
             self.log_step("Selecting 100 QAR and adding funds")
-            if not self.adb.wait_and_click(text="100 QAR", timeout=8, step_delay=0.5):
+            if not self.adb.wait_and_click(text="100 QAR", timeout=4, step_delay=0.2, auto_scroll=False):
                 self.adb.log_warn("100 QAR option not found by text. Clicking ratio.")
                 self.adb.tap_ratio(0.50, 0.32)
-                time.sleep(0.5)
 
-            if not self.adb.wait_and_click(text="Add funds", timeout=8, step_delay=0.5):
+            if not self.adb.wait_and_click(text="Add funds", timeout=4, step_delay=0.2, auto_scroll=False):
                 self.adb.log_warn("Add funds button not found. Clicking bottom button ratio.")
                 self.adb.tap_ratio(0.50, 0.94)
 
@@ -370,18 +377,18 @@ class KarwaAutomation:
 
             self.adb.log_info(f"Targeting customer email: {target_email}")
             
-            # DYNAMIC WAIT: Wait for ProgressBar to disappear and HTML form (customerEmail / 100.00 QAR) to load!
-            if not self.wait_for_payment_webview_ready(timeout=45):
+            # DYNAMIC WAIT: Wait for ProgressBar to disappear and HTML form (customerEmail / 100.00 QAR) to load
+            if not self.wait_for_payment_webview_ready(timeout=30):
                 self.adb.log_warn("Payment WebView HTML loading delayed. Retrying Add funds button tap...")
                 self.adb.tap_ratio(0.50, 0.94)
-                self.wait_for_payment_webview_ready(timeout=20)
+                self.wait_for_payment_webview_ready(timeout=15)
 
             # DYNAMIC ELEMENT SEARCH: Search for email element without auto-scroll
             email_elem, _ = self.adb.wait_for_any_element([
                 {"resource_id": "customerEmail"},
                 {"text": "email", "fuzzy": True},
                 {"class_name": "android.widget.EditText"}
-            ], timeout=5, poll_interval=0.5, auto_scroll=False)
+            ], timeout=4, poll_interval=0.3, auto_scroll=False)
 
             if email_elem:
                 self.adb.log_info(f"Focusing email input at ({email_elem['x']}, {email_elem['y']})...")
@@ -390,29 +397,28 @@ class KarwaAutomation:
                 self.adb.log_info("Tapping center position of email input box (0.50, 0.42)...")
                 self.adb.clear_and_type(target_email, rx=0.50, ry=0.42, backspace_count=0)
 
-            time.sleep(0.5)
+            time.sleep(0.2)
 
             # DYNAMIC VERIFICATION: Check if email field needs re-tap
             verify_kw, _ = self.adb.wait_for_page_to_contain([
                 "customer email is required", "valid email"
-            ], timeout=1.5)
+            ], timeout=1.0, poll_interval=0.3)
 
             if verify_kw:
                 self.adb.log_warn("Email field missing text. Re-focusing and re-entering email...")
                 self.adb.tap_ratio(0.50, 0.42)
-                time.sleep(0.4)
+                time.sleep(0.2)
                 self.adb.input_text(target_email)
-                time.sleep(0.5)
+                time.sleep(0.2)
 
             self.adb.dismiss_keyboard()
-            time.sleep(0.5)
 
             # Click Pay button (auto_scroll=False so it doesn't swipe away)
             self.log_step("Clicking Pay")
             pay_btn, _ = self.adb.wait_for_any_element([
                 {"text": "Pay", "class_name": "android.widget.Button"},
                 {"text": "Pay", "fuzzy": True}
-            ], timeout=8, auto_scroll=False)
+            ], timeout=5, auto_scroll=False)
 
             if pay_btn:
                 self.adb.tap(pay_btn['x'], pay_btn['y'])
@@ -420,17 +426,17 @@ class KarwaAutomation:
                 self.adb.log_warn("Pay button not found by text. Tapping Pay button ratio (0.50, 0.52).")
                 self.adb.tap_ratio(0.50, 0.52)
 
-            # DYNAMIC PAGE GUARD: Poll up to 45s for QPAY Gateway screen to load!
+            # DYNAMIC PAGE GUARD: Poll up to 30s for QPAY Gateway screen to load
             gw_ready, gw_kw = self.adb.wait_for_page_to_contain([
                 "fawran", "qpay", "select payment", "cardless"
-            ], timeout=45, poll_interval=0.5)
+            ], timeout=30, poll_interval=0.3)
 
             if not gw_ready:
                 self.adb.log_warn("QPAY Gateway screen loading delayed. Retrying Pay tap...")
                 self.adb.tap_ratio(0.50, 0.52)
                 gw_ready, gw_kw = self.adb.wait_for_page_to_contain([
                     "fawran", "qpay", "select payment", "cardless"
-                ], timeout=20, poll_interval=0.5)
+                ], timeout=15, poll_interval=0.3)
 
             self.adb.log_success(f"QPAY Gateway screen confirmed (matched '{gw_kw}')!")
 
@@ -443,7 +449,7 @@ class KarwaAutomation:
                 {"text": "Fawran", "class_name": "android.widget.Button"},
                 {"text": "Fawran", "fuzzy": True},
                 {"content_desc": "Fawran", "fuzzy": True}
-            ], timeout=20)
+            ], timeout=15, poll_interval=0.3, auto_scroll=False)
 
             if fawran_btn:
                 self.adb.tap(fawran_btn['x'], fawran_btn['y'])
@@ -451,19 +457,17 @@ class KarwaAutomation:
                 self.adb.log_warn("Fawran button not found by XML. Tapping Cardless/Fawran ratio.")
                 self.adb.tap_ratio(0.50, 0.76)
 
-            # DYNAMIC WAIT: Wait up to 35s for Fawran Details screen (Bank selection / Mobile input) to load!
+            # DYNAMIC WAIT: Wait for Fawran Details screen to load
             fawran_ready, f_kw = self.adb.wait_for_page_to_contain([
                 "bank", "select bank", "fawranprovider", "mobile number", "aliasvalue"
-            ], timeout=35, poll_interval=0.5)
+            ], timeout=25, poll_interval=0.3)
 
             self.adb.log_success(f"Fawran Details screen confirmed ready (matched '{f_kw}')!")
 
-            time.sleep(0.8)
-
             # Small scroll up to ensure Proceed to Payment is visible and clickable
             self.adb.swipe(self.adb.screen_width // 2, int(self.adb.screen_height * 0.75), 
-                           self.adb.screen_width // 2, int(self.adb.screen_height * 0.50), 300)
-            time.sleep(0.5)
+                           self.adb.screen_width // 2, int(self.adb.screen_height * 0.50), 200)
+            time.sleep(0.3)
 
             # Click Proceed to Payment
             self.log_step("Clicking Proceed to Payment")
@@ -471,7 +475,7 @@ class KarwaAutomation:
                 {"text": "Proceed to Payment", "class_name": "android.widget.Button"},
                 {"text": "Proceed to Payment", "fuzzy": True},
                 {"text": "Proceed", "fuzzy": True}
-            ], timeout=10)
+            ], timeout=8, poll_interval=0.3, auto_scroll=False)
 
             if proceed_btn:
                 self.adb.tap(proceed_btn['x'], proceed_btn['y'])
@@ -479,17 +483,17 @@ class KarwaAutomation:
                 self.adb.log_warn("Proceed to Payment button not found. Tapping bottom ratio.")
                 self.adb.tap_ratio(0.50, 0.82)
 
-            # STRICT PAGE GUARD: Wait up to 20s to confirm Fawran Details screen before proceeding to Step 8!
+            # STRICT PAGE GUARD: Confirm Fawran Details screen
             fawran_page_kw, _ = self.adb.wait_for_page_to_contain([
                 "aliasvalue", "fawranprovider", "select a provider", "mobile number", "enter fawran details"
-            ], timeout=20)
+            ], timeout=15, poll_interval=0.3)
 
             if not fawran_page_kw:
                 self.adb.log_warn("Fawran Details screen not detected after Proceed tap. Retrying Proceed ratio tap...")
                 self.adb.tap_ratio(0.50, 0.82)
                 fawran_page_kw, _ = self.adb.wait_for_page_to_contain([
                     "aliasvalue", "fawranprovider", "select a provider", "mobile number", "enter fawran details"
-                ], timeout=10)
+                ], timeout=8, poll_interval=0.3)
 
             # ----------------------------------------------------
             # 8. Enter Fawran Details (Bank Provider & Mobile Number)
@@ -502,7 +506,7 @@ class KarwaAutomation:
                 {"resource_id": "fawranProvider"},
                 {"text": "Select a provider", "fuzzy": True},
                 {"text": "provider", "fuzzy": True}
-            ], timeout=15)
+            ], timeout=10, poll_interval=0.3, auto_scroll=False)
 
             if provider_dropdown:
                 self.adb.tap(provider_dropdown['x'], provider_dropdown['y'])
@@ -510,8 +514,7 @@ class KarwaAutomation:
                 self.adb.log_warn("Provider dropdown element not found by XML. Tapping ratio position.")
                 self.adb.tap_ratio(0.50, 0.40)
 
-            # SMART WAIT: Wait for dropdown list/options to render in XML
-            time.sleep(1.2)
+            time.sleep(0.3)
 
             # Fast single-dump bank search & multi-pass scroll
             search_terms = get_bank_search_terms(bank)
@@ -537,11 +540,11 @@ class KarwaAutomation:
                     cx = self.adb.screen_width // 2
                     y_start = int(self.adb.screen_height * 0.65)
                     y_end = int(self.adb.screen_height * 0.40)
-                    self.adb.swipe(cx, y_start, cx, y_end, 300)
-                    time.sleep(0.8)
+                    self.adb.swipe(cx, y_start, cx, y_end, 200)
+                    time.sleep(0.3)
 
             if not bank_found:
-                # Deep fuzzy check for core bank keywords (e.g. "doha", "rayan", "dukhan", "islamic", "ahli", "qiib")
+                # Deep fuzzy check for core bank keywords
                 bank_words = [w.lower() for w in bank.replace("of", "").replace("qatar", "").replace("bank", "").split() if len(w) >= 3]
                 self.adb.log_info(f"Attempting deep keyword search for bank: {bank_words}")
                 for word in bank_words:
@@ -556,10 +559,6 @@ class KarwaAutomation:
                 self.adb.log_warn(f"Bank '{bank}' not matched in list. Tapping default dropdown item position.")
                 self.adb.tap_ratio(0.50, 0.45)
 
-            # MANDATORY SCREEN STABILIZATION PAUSE: Allow Web View to dismiss popup and re-render aliasValue
-            self.adb.log_info("Waiting for Fawran Details screen to stabilize after bank selection...")
-            time.sleep(2.0)
-
             # Dynamic Smart Poll for 8-digit mobile number input (aliasValue)
             self.adb.log_info(f"Entering mobile number: {phone}")
             alias_elem, _ = self.adb.wait_for_any_element([
@@ -567,33 +566,32 @@ class KarwaAutomation:
                 {"text": "Alias Value", "fuzzy": True},
                 {"text": "Mobile Number", "fuzzy": True},
                 {"class_name": "android.widget.EditText"}
-            ], timeout=20, poll_interval=0.5)
+            ], timeout=15, poll_interval=0.3, auto_scroll=False)
 
             if alias_elem:
                 self.adb.log_success(f"Located alias input field at ({alias_elem['x']}, {alias_elem['y']})")
                 self.adb.clear_and_type(phone, element=alias_elem)
             else:
-                # STRICT RE-CHECK: Poll page for keywords before attempting ratio fallback tap
                 self.adb.log_warn("Alias input box not matched by ID on first pass. Polling page for screen confirmation...")
                 confirm_kw, _ = self.adb.wait_for_page_to_contain([
                     "aliasvalue", "mobile number", "enter fawran details"
-                ], timeout=15)
+                ], timeout=10, poll_interval=0.3)
                 if confirm_kw:
                     self.adb.log_warn("Fawran Details screen confirmed. Using ratio input for mobile number.")
                     self.adb.clear_and_type(phone, rx=0.57, ry=0.62)
                 else:
                     self.adb.log_err("Screen desynchronized from Fawran details. Unable to input phone number safely.")
 
-            time.sleep(0.5)
+            time.sleep(0.2)
             self.adb.dismiss_keyboard()
-            time.sleep(0.5)
+            time.sleep(0.2)
 
             # Click Continue Button
             self.log_step("Clicking Continue")
             continue_btn, _ = self.adb.wait_for_any_element([
                 {"text": "Continue", "class_name": "android.widget.Button"},
                 {"text": "Continue", "fuzzy": True}
-            ], timeout=12)
+            ], timeout=10, poll_interval=0.3, auto_scroll=False)
 
             if continue_btn:
                 self.adb.tap(continue_btn['x'], continue_btn['y'])
@@ -602,7 +600,7 @@ class KarwaAutomation:
                 self.adb.tap_ratio(0.50, 0.77)
 
             # ----------------------------------------------------
-            # 9. Verify OTP / Result Status
+            # 9. Verify OTP / Result Status (High Speed Dynamic Polling)
             # ----------------------------------------------------
             self.log_step("Verifying OTP / Transaction Status")
             result = self.verify_otp_status(phone)
@@ -610,7 +608,7 @@ class KarwaAutomation:
 
         finally:
             # ----------------------------------------------------
-            # Clean up: Return to App Home screen for NEXT lead (App stays open!)
+            # Clean up: Return to App Home screen for NEXT lead
             # ----------------------------------------------------
             try:
                 self.reset_to_app_home()
@@ -618,7 +616,7 @@ class KarwaAutomation:
                 pass
 
     def verify_otp_status(self, phone):
-        """Analyzes screen XML layout and saves debug screenshots to verify OTP transmission."""
+        """Analyzes screen XML layout dynamically as soon as OTP / Failure status appears."""
         xml_dump_path = os.path.join(self.debug_dir, f"{phone}_layout.xml")
         screenshot_path = os.path.join(self.debug_dir, f"{phone}_screenshot.png")
         
@@ -637,35 +635,39 @@ class KarwaAutomation:
             "fraud validation error", "2799", "validation error", "fraud"
         ]
 
-        # Smart poll screen over up to 25 seconds (checking every 1.5 seconds)
         start_time = time.time()
         attempt = 0
-        while time.time() - start_time < 25:
+        while time.time() - start_time < 20:
             attempt += 1
-            time.sleep(1.5)
-            self.adb.dump_layout(xml_dump_path)
-            self.adb.take_screenshot(screenshot_path)
+            dump_path = self.adb.dump_layout(xml_dump_path)
             
-            if os.path.exists(xml_dump_path):
-                with open(xml_dump_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read().lower()
-                
-                success_matches = [w for w in success_keywords if w in content]
-                failure_matches = [w for w in failure_keywords if w in content]
-                
-                elapsed = int(time.time() - start_time)
-                self.adb.log_info(f"Screen Analysis [Check {attempt} | {elapsed}s] -> Success: {success_matches} | Failure: {failure_matches}")
+            if dump_path and os.path.exists(dump_path):
+                try:
+                    with open(dump_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read().lower()
+                    
+                    success_matches = [w for w in success_keywords if w in content]
+                    failure_matches = [w for w in failure_keywords if w in content]
+                    
+                    if len(success_matches) > 0:
+                        self.adb.take_screenshot(screenshot_path)
+                        elapsed = round(time.time() - start_time, 1)
+                        self.adb.log_success(f"OTP window confirmed for lead {phone} in {elapsed}s! Matches: {success_matches}")
+                        return "PASSED"
+                    elif len(failure_matches) > 0:
+                        self.adb.take_screenshot(screenshot_path)
+                        elapsed = round(time.time() - start_time, 1)
+                        self.adb.log_warn(f"Failure / Fraud indicator detected for lead {phone} in {elapsed}s: {failure_matches}")
+                        return "FAILED"
+                except Exception:
+                    pass
+            
+            time.sleep(0.3)
 
-                if len(success_matches) > 0:
-                    self.adb.log_success(f"OTP window confirmed for lead {phone}! Matches: {success_matches}")
-                    return "PASSED"
-                elif len(failure_matches) > 0:
-                    self.adb.log_warn(f"Failure / Fraud indicator detected for lead {phone}: {failure_matches}")
-                    return "FAILED"
-
-        # If OTP page was not detected after smart waiting, mark as FAILED (Invalid/No OTP page)
-        self.adb.log_warn(f"OTP page was NOT reached for lead {phone} after 25s smart wait. Marking as FAILED. Saved screenshot to {screenshot_path}")
+        self.adb.take_screenshot(screenshot_path)
+        self.adb.log_warn(f"OTP page was NOT reached for lead {phone} after 20s. Marking as FAILED.")
         return "FAILED"
+
 
 
     def process_csv_file(self):
@@ -784,7 +786,7 @@ class KarwaAutomation:
                 else:
                     print(f"{Fore.YELLOW}--> RESULT: Lead {clean_phone} [{status}]{Style.RESET_ALL}")
 
-                time.sleep(1)
+                time.sleep(0.2)
 
         self.adb.log_success(f"All leads processed! Results written to '{output_csv}'")
 
