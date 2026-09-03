@@ -495,7 +495,7 @@ class ADBManager:
                         if kw in content:
                             if os.path.exists(dump_file):
                                 os.remove(dump_file)
-                            return kw, content
+                            return kw, kw
                 except Exception:
                     pass
                 finally:
