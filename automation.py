@@ -6,6 +6,8 @@ import time
 import random
 import string
 import re
+import threading
+import queue
 from colorama import Fore, Style, init
 from adb_manager import ADBManager
 # Initialize colorama
@@ -40,9 +42,7 @@ def update_lead_status_in_input_csv(csv_file, target_phone, new_status):
             f.seek(0)
             if 'phone' in first_line.lower() or ',' in first_line:
                 reader = csv.DictReader(f)
-                fieldnames = list(reader.fieldnames or ['phone_number', 'email'])
-                if 'status' not in fieldnames:
-                    fieldnames.append('status')
+                fieldnames = reader.fieldnames
                 for row in reader:
                     p = clean_phone_number(row.get('phone_number', ''))
                     if p == clean_target:
@@ -119,10 +119,11 @@ def update_passed_and_failed_csv(clean_phone, bank, email, status, timestamp):
 class KarwaAutomation:
     """End-to-end Mobile Automation for Karwa Qatar Fawran Wallet Top-Up."""
 
-    def __init__(self, config_path="config.json"):
+    def __init__(self, config_path="config.json", device_serial=None):
         self.config_path = config_path
         self.config = self.load_config()
-        self.adb = ADBManager(target_ip=self.config.get("adb_target_ip"))
+        self.device_serial = device_serial
+        self.adb = ADBManager(target_ip=self.config.get("adb_target_ip"), device_serial=self.device_serial)
         
         self.debug_dir = self.config.get("debug_dir", "debug_logs")
         os.makedirs(self.debug_dir, exist_ok=True)
@@ -683,9 +684,166 @@ class KarwaAutomation:
         self.adb.log_success(f"All leads processed! Results written to '{output_csv}'")
 
 
+class MultiDeviceRunner:
+    """Manages parallel multi-phone execution for lead processing across all connected Android devices."""
+
+    def __init__(self, config_path="config.json", on_lead_callback=None, log_callback=None):
+        self.config_path = config_path
+        self.on_lead_callback = on_lead_callback
+        self.log_callback = log_callback
+        self.stop_requested = False
+        self.active_runners = []
+        self.file_lock = threading.Lock()
+
+    def request_stop(self):
+        self.stop_requested = True
+        for runner in self.active_runners:
+            runner.stop_requested = True
+
+    def run(self):
+        temp_inst = KarwaAutomation(self.config_path)
+        config = temp_inst.config
+        target_ip = config.get("adb_target_ip", "")
+        
+        devices = ADBManager.discover_all_devices(adb_path=temp_inst.adb.adb_path, target_ips=target_ip)
+        
+        if not devices:
+            print(f"{Fore.RED}[ERROR] No connected Android devices detected. Please check USB debugging / Wi-Fi ADB.{Style.RESET_ALL}")
+            if self.log_callback:
+                self.log_callback("ERROR", "No connected Android devices detected.")
+            return
+
+        print(f"{Fore.GREEN}[MULTI-DEVICE] Active devices detected ({len(devices)}): {devices}{Style.RESET_ALL}")
+        if self.log_callback:
+            self.log_callback("SUCCESS", f"Multi-device active connection ({len(devices)}): {', '.join(devices)}")
+
+        if len(devices) == 1:
+            runner = KarwaAutomation(self.config_path, device_serial=devices[0])
+            runner.on_lead_callback = self.on_lead_callback
+            if self.log_callback:
+                runner.adb.log_callback = self.log_callback
+            self.active_runners.append(runner)
+            if runner.setup_connection():
+                runner.process_csv_file()
+            return
+
+        input_csv = config.get("csv_input_file", "leads.csv")
+        output_csv = config.get("csv_output_file", "leads_results.csv")
+        
+        if not os.path.exists(input_csv):
+            print(f"{Fore.RED}[ERROR] Input CSV '{input_csv}' not found.{Style.RESET_ALL}")
+            return
+
+        processed_leads = set()
+        if os.path.exists(output_csv):
+            try:
+                with open(output_csv, 'r', newline='', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        p = clean_phone_number(row.get('phone_number', ''))
+                        if p and row.get('status') not in ['pending', '']:
+                            processed_leads.add(p)
+            except Exception:
+                pass
+
+        lead_queue = queue.Queue()
+        raw_leads = []
+        try:
+            with open(input_csv, 'r', newline='', encoding='utf-8') as f:
+                first_line = f.readline()
+                f.seek(0)
+                if 'phone' in first_line.lower() or ',' in first_line:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        raw_leads.append(row)
+                else:
+                    for line in f:
+                        line_str = line.strip()
+                        if line_str:
+                            raw_leads.append({'phone_number': line_str})
+        except Exception as e:
+            print(f"{Fore.RED}Error reading input CSV: {e}{Style.RESET_ALL}")
+            return
+
+        filter_bank = str(config.get("target_bank_filter", "All Banks")).strip()
+        default_bank = config.get("default_bank", "Commercial Bank of Qatar")
+
+        to_process = []
+        for item in raw_leads:
+            p = clean_phone_number(item.get('phone_number', ''))
+            if p and p not in processed_leads:
+                b = item.get('bank', '').strip()
+                if not b:
+                    b = filter_bank if filter_bank and filter_bank.lower() not in ["all banks", "all", ""] else default_bank
+                e = item.get('email', '').strip()
+                to_process.append((p, b, e))
+
+        for item in to_process:
+            lead_queue.put(item)
+
+        total_to_do = len(to_process)
+        print(f"{Fore.CYAN}[MULTI-DEVICE] Queue populated with {total_to_do} leads to process across {len(devices)} phones in parallel.{Style.RESET_ALL}")
+
+        def worker(device_serial):
+            runner = KarwaAutomation(self.config_path, device_serial=device_serial)
+            if self.log_callback:
+                runner.adb.log_callback = lambda level, msg: self.log_callback(level, f"[{device_serial}] {msg}")
+            
+            if not runner.setup_connection():
+                print(f"{Fore.RED}[{device_serial}] Connection failed. Worker exiting.{Style.RESET_ALL}")
+                return
+
+            self.active_runners.append(runner)
+
+            while not lead_queue.empty() and not self.stop_requested and not runner.stop_requested:
+                try:
+                    p, b, e = lead_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+                print(f"\n{Fore.MAGENTA}[{device_serial}] Processing Lead: {p} | Bank: {b}{Style.RESET_ALL}")
+                
+                status = "FAILED"
+                try:
+                    status = runner.run_flow_for_lead(p, b, e)
+                except Exception as ex:
+                    print(f"{Fore.RED}[{device_serial}] Error processing {p}: {ex}{Style.RESET_ALL}")
+                    status = "ERROR"
+
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+                with self.file_lock:
+                    file_mode = 'a' if os.path.exists(output_csv) and os.path.getsize(output_csv) > 0 else 'w'
+                    with open(output_csv, file_mode, newline='', encoding='utf-8') as out_f:
+                        writer = csv.DictWriter(out_f, fieldnames=['phone_number', 'bank', 'email', 'status', 'timestamp'])
+                        if file_mode == 'w':
+                            writer.writeheader()
+                        writer.writerow({'phone_number': p, 'bank': b, 'email': e, 'status': status, 'timestamp': timestamp})
+                        out_f.flush()
+
+                    update_passed_and_failed_csv(p, b, e, status, timestamp)
+                    update_lead_status_in_input_csv(input_csv, p, status)
+
+                    if self.on_lead_callback:
+                        try:
+                            self.on_lead_callback(p, status, b, e)
+                        except Exception:
+                            pass
+
+                lead_queue.task_done()
+
+        threads = []
+        for dev in devices:
+            t = threading.Thread(target=worker, args=(dev,), daemon=True)
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        print(f"{Fore.GREEN}[MULTI-DEVICE] All workers finished! Results written to '{output_csv}'{Style.RESET_ALL}")
+
+
 if __name__ == "__main__":
-    runner = KarwaAutomation()
-    if runner.setup_connection():
-        runner.process_csv_file()
-    else:
-        print(f"{Fore.RED}Please connect your device with USB Debugging enabled.{Style.RESET_ALL}")
+    runner = MultiDeviceRunner()
+    runner.run()

@@ -14,17 +14,46 @@ init(autoreset=True)
 class ADBManager:
     """Professional ADB Automation Manager for Android Device Control."""
     
-    def __init__(self, target_ip=None, local_dir="platform-tools-bin"):
+    def __init__(self, target_ip=None, device_serial=None, local_dir="platform-tools-bin"):
         self.target_ip = target_ip
+        self.device_serial = device_serial
         self.local_dir = os.path.abspath(local_dir)
         self.adb_path = "adb"
-        self.device_serial = None
         self.screen_width = 1080
         self.screen_height = 2340
         
         self.log_callback = None
         self.log_info("Initializing ADB Manager...")
         self._setup_adb()
+
+    @classmethod
+    def discover_all_devices(cls, adb_path="adb", target_ips=None):
+        """Discovers all active connected devices (USB & Wireless ADB)."""
+        ip_list = []
+        if isinstance(target_ips, str) and target_ips.strip():
+            ip_list = [ip.strip() for ip in target_ips.split(",") if ip.strip()]
+        elif isinstance(target_ips, list):
+            ip_list = [str(ip).strip() for ip in target_ips if str(ip).strip()]
+
+        for ip in ip_list:
+            if ip and str(ip).count('.') >= 3:
+                try:
+                    subprocess.run([adb_path, "connect", ip], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                except Exception:
+                    pass
+
+        try:
+            res = subprocess.run([adb_path, "devices"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            lines = res.stdout.strip().split("\n")[1:]
+            devices = []
+            for line in lines:
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1] == "device":
+                        devices.append(parts[0])
+            return sorted(list(set(devices)))
+        except Exception:
+            return []
 
     def log_info(self, msg):
         print(f"{Fore.BLUE}[INFO]{Style.RESET_ALL} {msg}")
@@ -111,6 +140,14 @@ class ADBManager:
 
     def connect(self):
         """Discovers and connects to the target USB or wireless device."""
+        if self.device_serial:
+            self.log_info(f"Targeting specified device serial: {self.device_serial}")
+            size = self.get_screen_size()
+            if size:
+                self.screen_width, self.screen_height = size
+            self.log_success(f"Device connection verified [{self.device_serial}]. Resolution: {self.screen_width}x{self.screen_height}")
+            return True
+
         if self.target_ip and str(self.target_ip).count('.') >= 3 and len(str(self.target_ip).strip()) >= 7:
             self.log_info(f"Connecting to wireless target: {self.target_ip}...")
             out, err, code = self.run_cmd(["connect", self.target_ip], timeout=3)

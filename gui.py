@@ -9,7 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 # pyrefly: ignore [missing-import]
 import customtkinter as ctk
 
-from automation import KarwaAutomation, clean_phone_number
+from automation import KarwaAutomation, MultiDeviceRunner, clean_phone_number
 from adb_manager import ADBManager
 
 # Set CustomTkinter theme
@@ -704,22 +704,24 @@ class KarwaOfficialGUI(ctk.CTk):
     # ADB & AUTOMATION WORKER THREAD LOGIC
     # -------------------------------------------------------------------
     def refresh_adb_status(self):
-        """Checks ADB device connectivity and updates badge."""
+        """Checks ADB device connectivity and updates badge for single or multiple devices."""
         def check():
             target_ip = self.ip_entry.get().strip()
-            adb = ADBManager(target_ip=target_ip if target_ip else None)
-            
-            res = adb.run_cmd(["devices"])
-            output = res[0]
-
-            lines = output.strip().split("\n")[1:] if "\n" in output else []
-            devices = [line.split()[0] for line in lines if line.strip() and "device" in line]
+            devices = ADBManager.discover_all_devices(target_ips=target_ip)
 
             def update_ui():
-                if devices:
+                if len(devices) > 1:
+                    dev_str = ", ".join(devices)
+                    self.status_badge.configure(
+                        text=f"🟢 {len(devices)} Devices Connected [{dev_str}]", 
+                        fg_color="#0A4234", 
+                        text_color="#00E6A5"
+                    )
+                    self.log_gui("SUCCESS", f"Multi-device active connection ({len(devices)}): {dev_str}")
+                elif len(devices) == 1:
                     serial = devices[0]
                     self.status_badge.configure(
-                        text=f"🟢 Connected [{serial}]", 
+                        text=f"🟢 1 Device Connected [{serial}]", 
                         fg_color="#0A4234", 
                         text_color="#00E6A5"
                     )
@@ -768,21 +770,14 @@ class KarwaOfficialGUI(ctk.CTk):
         self.btn_stop.configure(state="normal", fg_color=COLOR_BTN_STOP)
         self.tabview.set("📟 Real-Time Logs")
 
-        target_bank = self.combo_target_bank.get().strip()
-
         def worker():
             try:
-                self.runner = KarwaAutomation()
-                self.runner.target_bank_filter = target_bank
-                # Attach GUI logging & real-time result hooks
-                self.runner.adb.log_callback = self.log_gui
-                self.runner.on_lead_callback = self.handle_lead_completed
-                
-                if self.runner.setup_connection():
-                    self.log_gui("INFO", f"Starting automated CSV processing loop [Target Bank Filter: '{target_bank}']...")
-                    self.runner.process_csv_file()
-                else:
-                    self.log_gui("ERROR", "Connection setup failed. Please authorize ADB on phone.")
+                self.runner = MultiDeviceRunner(
+                    on_lead_callback=self.handle_lead_completed,
+                    log_callback=self.log_gui
+                )
+                self.log_gui("INFO", "Starting multi-device automated lead processing...")
+                self.runner.run()
             except Exception as e:
                 self.log_gui("ERROR", f"Automation execution error: {e}")
             finally:
@@ -791,7 +786,7 @@ class KarwaOfficialGUI(ctk.CTk):
                     self.btn_start.configure(state="normal", fg_color=COLOR_BTN_START)
                     self.btn_stop.configure(state="disabled", fg_color=COLOR_BTN_NEUTRAL)
                     self.reload_all()
-                    self.log_gui("INFO", "Automation thread finished.")
+                    self.log_gui("INFO", "Multi-device automation thread finished.")
 
                 self.after(0, reset_buttons)
 
@@ -800,8 +795,11 @@ class KarwaOfficialGUI(ctk.CTk):
 
     def stop_automation(self):
         if self.runner:
-            self.log_gui("WARN", "Stopping automation after current step...")
-            self.runner.stop_requested = True
+            self.log_gui("WARN", "Stopping automation across all devices...")
+            if hasattr(self.runner, 'request_stop'):
+                self.runner.request_stop()
+            else:
+                self.runner.stop_requested = True
         self.btn_stop.configure(state="disabled")
 
     def reload_all(self):
