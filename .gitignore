@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Project Generated Runtime Logs & Screenshots
+debug_logs/
+*.log
+
+# Generated CSV Output & Test Results (Keep sample leads.csv)
+leads_results.csv
+passed_leads.csv
+failed_leads.csv
+
+# Downloaded ADB Platform Tools Binaries
+platform-tools-bin/
+platform-tools/
+*.zip
+
+# Operating System & IDE Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment variables / credentials
+.env
+.env.local

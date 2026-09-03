@@ -1,0 +1,20 @@
+{
+  "adb_target_ip": "10.8.1.169",
+  "app_package": "com.karwatechnologies.karwa",
+  "app_activity": "com.karwatechnologies.karwa.MainActivity",
+  "payment_method": "Fawran",
+  "default_bank": "Qatar National Bank",
+  "default_email": "musaahmad261261@gmail.com",
+  "target_bank_filter": "Commercial Bank of Qatar",
+  "csv_input_file": "leads.csv",
+  "csv_output_file": "leads_results.csv",
+  "delay_between_steps": 1.2,
+  "element_timeout": 12,
+  "debug_dir": "debug_logs",
+  "restart_app_on_fail": true,
+  "rotate_location_per_lead": true,
+  "rotate_ip_per_lead": false,
+  "clear_cache_per_lead": true,
+  "http_proxy": "",
+  "proxy_list": []
+}
