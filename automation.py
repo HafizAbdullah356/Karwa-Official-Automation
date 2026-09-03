@@ -119,10 +119,11 @@ def update_passed_and_failed_csv(clean_phone, bank, email, status, timestamp):
 class KarwaAutomation:
     """End-to-end Mobile Automation for Karwa Qatar Fawran Wallet Top-Up."""
 
-    def __init__(self, config_path="config.json", device_serial=None):
+    def __init__(self, config_path="config.json", device_serial=None, sync_barrier=None):
         self.config_path = config_path
         self.config = self.load_config()
         self.device_serial = device_serial
+        self.sync_barrier = sync_barrier
         self.adb = ADBManager(target_ip=self.config.get("adb_target_ip"), device_serial=self.device_serial)
         
         self.debug_dir = self.config.get("debug_dir", "debug_logs")
@@ -136,6 +137,14 @@ class KarwaAutomation:
         self.default_email = self.config.get("default_email", "musaahmad261261@gmail.com")
         self.target_bank_filter = self.config.get("target_bank_filter", "All Banks")
         self.stop_requested = False
+
+    def sync_step(self, step_name="step"):
+        """Synchronizes step execution across all connected devices so devices advance together in lockstep."""
+        if hasattr(self, 'sync_barrier') and self.sync_barrier:
+            try:
+                self.sync_barrier.wait(timeout=25)
+            except Exception:
+                pass
 
     def load_config(self):
         try:
@@ -164,31 +173,18 @@ class KarwaAutomation:
         # 1. Dismiss soft keyboard if open
         self.adb.dismiss_keyboard()
 
-        # 2. Check if stuck on Transaction / Activity History page
-        page_kw, _ = self.adb.wait_for_page_to_contain(["transaction", "history", "recent transactions"], timeout=0.6, poll_interval=0.2)
-        if page_kw:
-            self.adb.log_warn(f"Transaction History page detected ('{page_kw}'). Pressing Back to escape...")
+        # 2. Press Back 3 times to exit QPAY / Fawran webview cleanly
+        for _ in range(3):
             self.adb.go_back()
-            time.sleep(0.3)
+            time.sleep(0.15)
 
         # 3. Bring Karwa MainActivity to front smoothly via am start
         self.adb.start_app(self.package, self.activity)
-        time.sleep(0.4)
+        time.sleep(0.3)
 
         # 4. Tap bottom-left Home tab (0.15, 0.95) to force root Home view ("Our Services")
         self.adb.tap_ratio(0.15, 0.95)
-        time.sleep(0.3)
-
-        # 5. Verify Home screen root
-        elem, _ = self.adb.wait_for_any_element([
-            {"text": "Our Services"},
-            {"text": "Services", "fuzzy": True},
-            {"text": "Account"}
-        ], timeout=3, poll_interval=0.25, auto_scroll=False)
-
-        if elem:
-            self.adb.log_success("Confirmed Karwa App Home screen.")
-            return True
+        time.sleep(0.2)
 
         return True
 
@@ -267,13 +263,7 @@ class KarwaAutomation:
                     pass
 
             # ----------------------------------------------------
-            # 1. Ensure App Home Screen is Active
-            # ----------------------------------------------------
-            self.log_step("Navigating to App Home Screen")
-            self.reset_to_app_home()
-
-            # ----------------------------------------------------
-            # 2. Tap Account Tab (Bottom-Right 0.88, 0.95)
+            # 1. Tap Account Tab (Bottom-Right 0.88, 0.95)
             # ----------------------------------------------------
             self.log_step("Navigating to Account Tab")
             account_elem = self.adb.find_element(text="Account", dump_file=None)
@@ -337,13 +327,15 @@ class KarwaAutomation:
             self.log_step("Entering Email on Payment Web View")
             target_email = email.strip() if email and email.strip() and "@" in email else generate_random_email()
 
-            self.wait_for_payment_webview_ready(timeout=20)
+            # Synchronized Webview Ready Check: Fast device waits for slow device webview to finish loading
+            self.wait_for_payment_webview_ready(timeout=25)
+            self.sync_step("webview_ready")
 
             email_elem, _ = self.adb.wait_for_any_element([
                 {"resource_id": "customerEmail"},
                 {"text": "email", "fuzzy": True},
                 {"class_name": "android.widget.EditText"}
-            ], timeout=3, poll_interval=0.25, auto_scroll=False)
+            ], timeout=5, poll_interval=0.25, auto_scroll=False)
 
             if email_elem:
                 self.adb.clear_and_type(target_email, element=email_elem, backspace_count=0)
@@ -353,14 +345,27 @@ class KarwaAutomation:
             time.sleep(0.2)
             self.adb.dismiss_keyboard()
             time.sleep(0.2)
+            self.sync_step("email_entered")
 
-            # Click Pay button
+            # Click Pay button (Synchronized across all screen resolutions)
             self.log_step("Clicking Pay")
-            pay_btn = self.adb.find_element(text="Pay", fuzzy=True)
-            if pay_btn:
+            pay_btn = self.adb.find_element(text="Pay", fuzzy=False)
+            if not pay_btn or pay_btn['y'] < self.adb.screen_height * 0.35:
+                # Swipe up slightly to bring Pay button into view on 720x1600 / taller screens
+                self.adb.swipe_up(duration_ms=150)
+                time.sleep(0.15)
+                pay_btn = self.adb.find_element(text="Pay", fuzzy=False)
+
+            if pay_btn and pay_btn['y'] > self.adb.screen_height * 0.35:
                 self.adb.tap(pay_btn['x'], pay_btn['y'])
+                self.adb.log_success(f"Pay button tapped at ({pay_btn['x']}, {pay_btn['y']})!")
             else:
+                self.adb.log_info("Pay button element not found. Executing resolution ratio fallbacks...")
                 self.adb.tap_ratio(0.50, 0.52)
+                self.adb.tap_ratio(0.50, 0.58)
+                self.adb.tap_ratio(0.50, 0.64)
+
+            self.sync_step("pay_clicked")
 
             # DYNAMIC PAGE GUARD: Wait for QPAY Gateway screen
             gw_ready, gw_kw = self.adb.wait_for_page_to_contain([
@@ -468,13 +473,23 @@ class KarwaAutomation:
             self.adb.dismiss_keyboard()
             time.sleep(0.2)
 
-            # Click Continue Button
+            # Click Continue Button (Auto-scroll & Keyboard Dismissal)
             self.log_step("Clicking Continue")
-            continue_btn = self.adb.find_element(text="Continue", fuzzy=True)
-            if continue_btn:
+            self.adb.dismiss_keyboard()
+            time.sleep(0.15)
+            self.adb.swipe_up(duration_ms=150)
+            time.sleep(0.15)
+
+            continue_btn = self.adb.find_element(text="Continue", fuzzy=False)
+            if continue_btn and continue_btn['y'] > self.adb.screen_height * 0.35:
                 self.adb.tap(continue_btn['x'], continue_btn['y'])
+                self.adb.log_success(f"Clicked Continue button at ({continue_btn['x']}, {continue_btn['y']})!")
             else:
+                self.adb.log_info("Continue button element not found. Executing ratio fallbacks...")
                 self.adb.tap_ratio(0.50, 0.77)
+                self.adb.tap_ratio(0.50, 0.85)
+
+            self.sync_step("continue_clicked")
 
             # ----------------------------------------------------
             # 9. Verify OTP / Result Status (High Speed Dynamic Polling)
@@ -766,8 +781,10 @@ class MultiDeviceRunner:
         total_to_do = len(to_process)
         print(f"{Fore.CYAN}[MULTI-DEVICE] Queue populated with {total_to_do} leads to process across {len(devices)} phones in parallel.{Style.RESET_ALL}")
 
+        sync_barrier = threading.Barrier(len(devices)) if len(devices) > 1 else None
+
         def worker(device_serial):
-            runner = KarwaAutomation(self.config_path, device_serial=device_serial)
+            runner = KarwaAutomation(self.config_path, device_serial=device_serial, sync_barrier=sync_barrier)
             if self.log_callback:
                 runner.adb.log_callback = lambda level, msg: self.log_callback(level, f"[{device_serial}] {msg}")
             
