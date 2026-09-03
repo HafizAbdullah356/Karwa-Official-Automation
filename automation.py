@@ -146,7 +146,8 @@ class KarwaAutomation:
             return {}
 
     def log_step(self, step_name):
-        print(f"\n{Fore.CYAN}=================== STEP: {step_name} ==================={Style.RESET_ALL}")
+        dev_prefix = f"[{self.device_serial}] " if self.device_serial else ""
+        print(f"\n{Fore.CYAN}{dev_prefix}=================== STEP: {step_name} ==================={Style.RESET_ALL}")
 
     def setup_connection(self):
         self.log_step("Connecting to Android Device")
@@ -160,60 +161,41 @@ class KarwaAutomation:
         """Navigates smoothly back to Karwa App Home screen without force-stopping or closing the app."""
         self.adb.log_info("Returning to Karwa app home screen...")
         
-        # Dismiss soft keyboard if open
+        # 1. Dismiss soft keyboard if open
         self.adb.dismiss_keyboard()
 
-        # 1. Check if already on Home screen root
-        elem, _ = self.adb.wait_for_any_element([
-            {"text": "Account"},
-            {"text": "Our Services"},
-            {"text": "Services", "fuzzy": True}
-        ], timeout=2, poll_interval=0.3, auto_scroll=False)
-
-        if elem:
-            self.adb.log_success("Already on Karwa App home screen.")
-            return True
-
         # 2. Check if stuck on Transaction / Activity History page
-        page_kw, _ = self.adb.wait_for_page_to_contain(["transaction", "history", "recent transactions"], timeout=1, poll_interval=0.3)
+        page_kw, _ = self.adb.wait_for_page_to_contain(["transaction", "history", "recent transactions"], timeout=0.6, poll_interval=0.2)
         if page_kw:
-            self.adb.log_warn(f"Transaction History page detected ('{page_kw}'). Pressing Back...")
+            self.adb.log_warn(f"Transaction History page detected ('{page_kw}'). Pressing Back to escape...")
             self.adb.go_back()
             time.sleep(0.3)
 
-        # 3. Try clicking top-left back button (ivBack) to exit WebView / Payment screen
-        iv_back = self.adb.find_element(resource_id="ivBack", fuzzy=True)
-        if iv_back:
-            self.adb.log_info(f"Clicking top-left Back button (ivBack) at ({iv_back['x']}, {iv_back['y']})...")
-            self.adb.tap(iv_back['x'], iv_back['y'])
-            elem, _ = self.adb.wait_for_any_element([{"text": "Account"}, {"text": "Our Services"}], timeout=2, poll_interval=0.3, auto_scroll=False)
-            if elem:
-                self.adb.log_success("Successfully returned to Home screen via top-left Back button.")
-                return True
-
-        # 4. Bring Karwa MainActivity to front smoothly via am start
-        self.adb.log_info("Bringing Karwa MainActivity to front...")
+        # 3. Bring Karwa MainActivity to front smoothly via am start
         self.adb.start_app(self.package, self.activity)
-        
-        home_elem, _ = self.adb.wait_for_any_element([
+        time.sleep(0.4)
+
+        # 4. Tap bottom-left Home tab (0.15, 0.95) to force root Home view ("Our Services")
+        self.adb.tap_ratio(0.15, 0.95)
+        time.sleep(0.3)
+
+        # 5. Verify Home screen root
+        elem, _ = self.adb.wait_for_any_element([
             {"text": "Our Services"},
-            {"text": "Account"},
-            {"text": "Services", "fuzzy": True}
-        ], timeout=4, poll_interval=0.3, auto_scroll=False)
-        
-        if home_elem:
-            self.adb.log_success("Successfully returned to Home screen via MainActivity reset.")
+            {"text": "Services", "fuzzy": True},
+            {"text": "Account"}
+        ], timeout=3, poll_interval=0.25, auto_scroll=False)
+
+        if elem:
+            self.adb.log_success("Confirmed Karwa App Home screen.")
             return True
 
-        # 5. Fallback: Tap Home tab (bottom-left ratio 0.12, 0.95)
-        self.adb.log_info("Tapping Home tab (bottom-left) to reset view...")
-        self.adb.tap_ratio(0.12, 0.95)
         return True
 
     def wait_for_payment_webview_ready(self, timeout=20):
         """Polls rapidly until WebView progressbar spinner disappears and HTML content (customerEmail / 100.00 QAR) is rendered."""
         start = time.time()
-        temp_file = os.path.join(self.debug_dir, "temp_webview_dump.xml")
+        temp_file = os.path.join(self.debug_dir, f"temp_webview_{self.adb.clean_serial}.xml")
         
         while time.time() - start < timeout:
             dump_path = self.adb.dump_layout(temp_file)

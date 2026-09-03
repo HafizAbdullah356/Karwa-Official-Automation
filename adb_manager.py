@@ -348,9 +348,19 @@ class ADBManager:
         self.input_text(str(text))
         time.sleep(0.5)
 
-    def dump_layout(self, local_path="temp_dump.xml"):
-        """Dumps UI hierarchy XML and pulls it to local PC."""
-        remote_path = "/sdcard/window_dump.xml"
+    @property
+    def clean_serial(self):
+        """Returns sanitized serial string safe for file names."""
+        if not self.device_serial:
+            return "dev"
+        return re.sub(r'[^\w]', '_', str(self.device_serial))
+
+    def dump_layout(self, local_path=None):
+        """Dumps UI hierarchy XML and pulls it to local PC using device-isolated paths."""
+        if not local_path:
+            local_path = os.path.join("debug_logs", f"dump_{self.clean_serial}.xml")
+        
+        remote_path = f"/sdcard/window_dump_{self.clean_serial}.xml"
         out, err, code = self.run_cmd(["shell", "uiautomator", "dump", remote_path], timeout=6)
         if code != 0 or "error" in out.lower() or "error" in err.lower():
             self.run_cmd(["shell", "pkill", "-f", "uiautomator"], timeout=3)
@@ -360,9 +370,12 @@ class ADBManager:
             return local_path
         return None
 
-    def take_screenshot(self, local_path="screenshot.png"):
-        """Captures device screenshot and pulls it to local PC."""
-        remote_path = "/sdcard/screen.png"
+    def take_screenshot(self, local_path=None):
+        """Captures device screenshot and pulls it to local PC using device-isolated paths."""
+        if not local_path:
+            local_path = os.path.join("debug_logs", f"screen_{self.clean_serial}.png")
+            
+        remote_path = f"/sdcard/screen_{self.clean_serial}.png"
         self.run_cmd(["shell", "screencap", "-p", remote_path])
         out, err, code = self.run_cmd(["pull", remote_path, local_path])
         if code == 0 and os.path.exists(local_path):
@@ -444,7 +457,7 @@ class ADBManager:
 
     def find_element(self, text=None, resource_id=None, content_desc=None, class_name=None, fuzzy=False, dump_file=None):
         """Analyzes UI XML structure to locate elements matching text/id/class."""
-        temp_file = dump_file or os.path.join("debug_logs", "temp_ui_dump.xml")
+        temp_file = dump_file or os.path.join("debug_logs", f"temp_ui_{self.clean_serial}.xml")
         xml_path = self.dump_layout(temp_file)
         if not xml_path:
             return None
@@ -478,9 +491,9 @@ class ADBManager:
         return False
 
     def wait_for_any_element(self, element_specs, timeout=15, poll_interval=0.3, auto_scroll=False):
-        """Polls for any element in specs rapidly. Auto-scrolls down if not found after initial checks when auto_scroll is True."""
+        """Polls for any element in specs rapidly using device-isolated dump files."""
         start = time.time()
-        temp_file = os.path.join("debug_logs", "temp_poll_dump.xml")
+        temp_file = os.path.join("debug_logs", f"temp_poll_{self.clean_serial}.xml")
         scrolled = False
 
         while time.time() - start < timeout:
@@ -505,7 +518,6 @@ class ADBManager:
                         except Exception:
                             pass
 
-            # Auto-scroll feature: Only if explicitly enabled and not found after 2.5s
             if auto_scroll and not scrolled and (time.time() - start > 2.5):
                 self.log_info("Element not visible on current screen view. Scrolling down to locate button...")
                 self.swipe_up(duration_ms=300)
@@ -515,9 +527,12 @@ class ADBManager:
             time.sleep(poll_interval)
         return None, None
 
-    def wait_for_page_to_contain(self, keywords, timeout=15, poll_interval=0.3, local_path="temp_page_dump.xml"):
+    def wait_for_page_to_contain(self, keywords, timeout=15, poll_interval=0.3, local_path=None):
         """Polls UI layout dump until any of the given keywords exist in the page hierarchy."""
         start = time.time()
+        if not local_path:
+            local_path = os.path.join("debug_logs", f"temp_page_{self.clean_serial}.xml")
+
         if isinstance(keywords, str):
             keywords = [keywords]
         keywords_lower = [k.lower() for k in keywords]
